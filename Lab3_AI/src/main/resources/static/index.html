@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Boids — стая птиц</title>
+<style>
+  :root {
+    --bg: #f4f1ea; --panel: #fffdf8; --ink: #1f2328; --muted: #6b6f76; --line: #e2ddd2;
+    --sky: #0f1b2b; --accent: #d9622b; --accent-ink: #fff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { padding: 14px 20px; display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+           border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 18px; margin: 0; }
+  header span { color: var(--muted); }
+  nav { margin-left: auto; display: flex; gap: 4px; }
+  nav button { background: none; border: 1px solid transparent; padding: 6px 12px; border-radius: 6px;
+               font: inherit; cursor: pointer; color: var(--muted); }
+  nav button.active { border-color: var(--line); background: var(--panel); color: var(--ink); }
+  main { padding: 16px 20px; }
+  .tab { display: none; } .tab.active { display: block; }
+  .layout { display: grid; grid-template-columns: minmax(0, 640px) minmax(280px, 1fr); gap: 18px; align-items: start; }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+  .sky { background: var(--sky); border-radius: 10px; padding: 10px; }
+  #world { width: 100%; aspect-ratio: 1; display: block; border-radius: 6px; }
+  .bar { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; align-items: center; }
+  button.btn { font: inherit; padding: 7px 14px; border-radius: 6px; border: 1px solid var(--line);
+               background: var(--panel); cursor: pointer; color: var(--ink); }
+  button.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+  .card h3 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .metric b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+  .metric small { color: var(--muted); }
+  .row { display: grid; grid-template-columns: 150px 1fr 54px; gap: 8px; align-items: center; margin: 6px 0; }
+  .row label { color: var(--muted); }
+  .row output { text-align: right; font-variant-numeric: tabular-nums; }
+  .row input[type=range] { width: 100%; accent-color: var(--accent); }
+  .row input[type=number], .row select { width: 100%; font: inherit; padding: 3px 6px; border: 1px solid var(--line); border-radius: 4px; background: #fff; }
+  .hint { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
+  .check { display: flex; gap: 6px; align-items: center; color: var(--muted); }
+  #chart { width: 100%; height: 140px; display: block; }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .legend i { display: inline-block; width: 10px; height: 3px; vertical-align: middle; margin-right: 4px; }
+  table { width: 100%; border-collapse: collapse; background: var(--panel); font-variant-numeric: tabular-nums; }
+  th, td { padding: 7px 10px; border-bottom: 1px solid var(--line); text-align: left; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; }
+  th.num, td.num { text-align: right; }
+  tr.series td { background: var(--bg); font-weight: 600; }
+  .scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Boids: стая птиц</h1>
+  <span>Вариант №1 · центрирование, выравнивание, разделение</span>
+  <nav>
+    <button data-tab="sim" class="active">Симуляция</button>
+    <button data-tab="exp">Эксперименты</button>
+  </nav>
+</header>
+
+<main>
+<section id="tab-sim" class="tab active">
+  <div class="layout">
+    <div>
+      <div class="sky"><canvas id="world" width="640" height="640"></canvas></div>
+      <div class="bar">
+        <button class="btn primary" id="play">▶ Старт</button>
+        <button class="btn" id="stepBtn">Шаг</button>
+        <button class="btn" id="reset">Перезапуск</button>
+        <button class="btn" id="snap">Сохранить кадр PNG</button>
+        <label class="check"><input type="checkbox" id="trails"> следы</label>
+        <label class="check"><input type="checkbox" id="showRadius" checked> радиусы птицы №0</label>
+        <label class="check">скорость
+          <select id="spf"><option value="1">×1</option><option value="2">×2</option><option value="5">×5</option></select>
+        </label>
+      </div>
+      <p class="hint">Цвет — группа (птицы ближе 5 единиц друг к другу по цепочке). Серые — одиночки.
+        Белая птица №0: внешний круг — радиус взаимодействия, внутренний — разделения.</p>
+    </div>
+
+    <div>
+      <div class="card">
+        <h3>Состояние · шаг <span id="stepNo">0</span></h3>
+        <div class="metrics">
+          <div class="metric"><b id="mPol">–</b><small>поляризация (0…1)</small></div>
+          <div class="metric"><b id="mGroups">–</b><small>групп</small></div>
+          <div class="metric"><b id="mLargest">–</b><small>в крупнейшей</small></div>
+          <div class="metric"><b id="mNN">–</b><small>до ближ. соседа</small></div>
+          <div class="metric"><b id="mColl">–</b><small>столкновений</small></div>
+          <div class="metric"><b id="mCount">–</b><small>птиц</small></div>
+        </div>
+        <canvas id="chart" width="600" height="140"></canvas>
+        <div class="legend"><span><i style="background:#d9622b"></i>поляризация</span><span><i style="background:#2f6fb3"></i>доля птиц в крупнейшей группе</span></div>
+      </div>
+
+      <div class="card">
+        <h3>Правила (меняются на лету)</h3>
+        <div id="liveControls"></div>
+      </div>
+
+      <div class="card">
+        <h3>Среда (применяется при перезапуске)</h3>
+        <div class="row"><label>Количество птиц</label><input type="number" id="boidCount" min="2" max="300"><span></span></div>
+        <div class="row"><label>Seed</label><input type="number" id="seed"><span></span></div>
+        <div class="row"><label>Границы</label>
+          <select id="boundaryMode"><option value="WRAP">WRAP — с другой стороны</option><option value="BOUNCE">BOUNCE — отражение</option></select><span></span></div>
+        <button class="btn" id="defaults" style="margin-top:6px">Вернуть параметры по умолчанию</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="tab-exp" class="tab">
+  <div class="card">
+    <h3>Серия экспериментов</h3>
+    <p style="margin:0 0 10px">Каждая строка — 500 шагов × 5 разных seed, метрики усреднены по последним 100 шагам.
+      Меняется только указанный параметр, остальные — по умолчанию (50 птиц, R = 10, C = 0.01, A = 0.05, S = 0.1, WRAP).</p>
+    <div class="bar" style="margin:0 0 12px">
+      <button class="btn primary" id="runExp">Запустить эксперименты</button>
+      <button class="btn" id="csv" disabled>Скачать CSV</button>
+      <span id="expStatus" class="hint"></span>
+    </div>
+    <div class="scroll"><table id="expTable"><thead><tr>
+      <th>Эксперимент</th><th class="num">Поляризация</th><th class="num">Групп</th><th class="num">В крупнейшей</th>
+      <th class="num">До ближ. соседа</th><th class="num">Столкн./шаг</th><th></th>
+    </tr></thead><tbody></tbody></table></div>
+  </div>
+</section>
+</main>
+
+<script>
+// ---------------------------------------------------------------- параметры
+const LIVE = [
+  { key: 'perceptionRadius', label: 'Радиус взаимодействия', min: 0, max: 50, step: 0.5 },
+  { key: 'separationRadius', label: 'Радиус разделения',     min: 0, max: 10, step: 0.1 },
+  { key: 'cohesionWeight',   label: 'Вес центрирования',     min: 0, max: 0.1, step: 0.001 },
+  { key: 'alignmentWeight',  label: 'Вес выравнивания',      min: 0, max: 0.3, step: 0.005 },
+  { key: 'separationWeight', label: 'Вес разделения',        min: 0, max: 1, step: 0.01 },
+  { key: 'maxSpeed',         label: 'Макс. скорость',        min: 0.2, max: 3, step: 0.05 },
+  { key: 'maxAcceleration',  label: 'Макс. ускорение',       min: 0.01, max: 0.5, step: 0.01 },
+];
+let params = null;      // текущие параметры (как в SimulationParams на сервере)
+let state = null;       // последнее состояние с сервера
+let running = false, busy = false;
+let history = [];       // для графика
+
+const $ = id => document.getElementById(id);
+
+function buildLiveControls() {
+  const box = $('liveControls');
+  for (const c of LIVE) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML = `<label for="${c.key}">${c.label}</label>
+      <input type="range" id="${c.key}" min="${c.min}" max="${c.max}" step="${c.step}">
+      <output id="${c.key}Out"></output>`;
+    box.appendChild(row);
+    row.querySelector('input').addEventListener('input', e => {
+      params[c.key] = parseFloat(e.target.value);
+      showValue(c.key);
+      sendLiveParams();
+    });
+  }
+}
+
+function showValue(key) {
+  const v = params[key];
+  $(key + 'Out').textContent = Number.isInteger(v) ? v : +v.toFixed(3);
+}
+
+function fillControls() {
+  for (const c of LIVE) { $(c.key).value = params[c.key]; showValue(c.key); }
+  $('boidCount').value = params.boidCount;
+  $('seed').value = params.seed;
+  $('boundaryMode').value = params.boundaryMode;
+}
+
+function readEnvControls() {
+  params.boidCount = parseInt($('boidCount').value, 10) || 50;
+  params.seed = parseInt($('seed').value, 10) || 0;
+  params.boundaryMode = $('boundaryMode').value;
+}
+
+let liveTimer = null;
+function sendLiveParams() {
+  clearTimeout(liveTimer);
+  liveTimer = setTimeout(async () => {
+    readEnvControls();
+    const s = await api('POST', '/api/params', params);
+    onState(s);
+  }, 80);
+}
+
+// ---------------------------------------------------------------- API
+async function api(method, url, body) {
+  const res = await fetch(url, {
+    method, headers: body ? { 'Content-Type': 'application/json' } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) throw new Error(method + ' ' + url + ': ' + res.status);
+  return res.json();
+}
+
+async function reset(p) {
+  history = [];
+  onState(await api('POST', '/api/reset', p));
+  params = structuredClone(state.params);
+  fillControls();
+}
+
+function onState(s) {
+  state = s;
+  const m = s.metrics, n = s.boids.length;
+  history.push({ step: s.step, pol: m.polarization, largest: n ? m.largestGroup / n : 0 });
+  if (history.length > 600) history.shift();
+  $('stepNo').textContent = s.step;
+  $('mPol').textContent = m.polarization.toFixed(2);
+  $('mGroups').textContent = m.groups;
+  $('mLargest').textContent = m.largestGroup;
+  $('mNN').textContent = m.avgNearestDistance.toFixed(2);
+  $('mColl').textContent = m.collisions;
+  $('mCount').textContent = n;
+  drawWorld();
+  drawChart();
+}
+
+// ---------------------------------------------------------------- отрисовка
+const PALETTE = ['#f2a65a', '#7cc6fe', '#9be08f', '#f78fb3', '#c9a7ff', '#ffe066', '#5ee6d0', '#ff8c6b'];
+const world = $('world'), wctx = world.getContext('2d');
+
+function drawWorld() {
+  if (!state) return;
+  const p = state.params, W = world.width, H = world.height;
+  const sx = W / p.worldWidth, sy = H / p.worldHeight;
+
+  if ($('trails').checked) { wctx.fillStyle = 'rgba(15,27,43,0.18)'; wctx.fillRect(0, 0, W, H); }
+  else { wctx.fillStyle = '#0f1b2b'; wctx.fillRect(0, 0, W, H); }
+
+  // размеры групп: одиночек красим серым, группы — цветами палитры
+  const sizes = {};
+  for (const b of state.boids) sizes[b[4]] = (sizes[b[4]] || 0) + 1;
+  const order = Object.keys(sizes).filter(g => sizes[g] > 1).sort((a, b) => sizes[b] - sizes[a]);
+  const color = {}; order.forEach((g, i) => color[g] = PALETTE[i % PALETTE.length]);
+
+  if ($('showRadius').checked && state.boids.length) {
+    const [x, y] = state.boids[0];
+    wctx.strokeStyle = 'rgba(255,255,255,0.35)'; wctx.lineWidth = 1;
+    wctx.beginPath(); wctx.arc(x * sx, y * sy, p.perceptionRadius * sx, 0, Math.PI * 2); wctx.stroke();
+    wctx.strokeStyle = 'rgba(255,120,90,0.6)';
+    wctx.beginPath(); wctx.arc(x * sx, y * sy, p.separationRadius * sx, 0, Math.PI * 2); wctx.stroke();
+  }
+
+  state.boids.forEach((b, i) => {
+    const [x, y, vx, vy, g] = b;
+    const a = Math.atan2(vy, vx);
+    const s = 7;
+    wctx.save();
+    wctx.translate(x * sx, y * sy);
+    wctx.rotate(a);
+    wctx.beginPath();
+    wctx.moveTo(s, 0); wctx.lineTo(-s * 0.7, s * 0.5); wctx.lineTo(-s * 0.4, 0); wctx.lineTo(-s * 0.7, -s * 0.5);
+    wctx.closePath();
+    wctx.fillStyle = i === 0 && $('showRadius').checked ? '#ffffff' : (color[g] || '#8a94a3');
+    wctx.fill();
+    wctx.restore();
+  });
+}
+
+const chart = $('chart'), cctx = chart.getContext('2d');
+function drawChart() {
+  const W = chart.width, H = chart.height, pad = 6;
+  cctx.clearRect(0, 0, W, H);
+  cctx.strokeStyle = '#e2ddd2'; cctx.lineWidth = 1;
+  for (const v of [0, 0.5, 1]) {
+    const y = H - pad - v * (H - 2 * pad);
+    cctx.beginPath(); cctx.moveTo(0, y); cctx.lineTo(W, y); cctx.stroke();
+  }
+  const line = (key, col) => {
+    cctx.strokeStyle = col; cctx.lineWidth = 2; cctx.beginPath();
+    history.forEach((h, i) => {
+      const x = (i / 599) * W, y = H - pad - h[key] * (H - 2 * pad);
+      i ? cctx.lineTo(x, y) : cctx.moveTo(x, y);
+    });
+    cctx.stroke();
+  };
+  line('largest', '#2f6fb3');
+  line('pol', '#d9622b');
+}
+
+// ---------------------------------------------------------------- цикл анимации
+async function loop() {
+  if (running && !busy) {
+    busy = true;
+    try { onState(await api('POST', '/api/step?count=' + $('spf').value)); }
+    catch (e) { console.error(e); running = false; updatePlay(); }
+    busy = false;
+  }
+  requestAnimationFrame(loop);
+}
+
+function updatePlay() { $('play').textContent = running ? '❚❚ Пауза' : '▶ Старт'; }
+
+// ---------------------------------------------------------------- эксперименты
+let expResults = [];
+async function runExperiments() {
+  $('runExp').disabled = true;
+  $('expStatus').textContent = 'Считаю…';
+  const t = performance.now();
+  try {
+    expResults = await api('POST', '/api/experiments');
+    renderExperiments();
+    $('expStatus').textContent = `Готово за ${((performance.now() - t) / 1000).toFixed(1)} с`;
+    $('csv').disabled = false;
+  } catch (e) {
+    $('expStatus').textContent = 'Ошибка: ' + e.message;
+  }
+  $('runExp').disabled = false;
+}
+
+function renderExperiments() {
+  const tb = document.querySelector('#expTable tbody');
+  tb.innerHTML = '';
+  let series = null;
+  expResults.forEach((r, i) => {
+    if (r.series !== series) {
+      series = r.series;
+      tb.insertAdjacentHTML('beforeend', `<tr class="series"><td colspan="7">${series}</td></tr>`);
+    }
+    tb.insertAdjacentHTML('beforeend', `<tr>
+      <td>${r.name}</td>
+      <td class="num">${r.polarization.toFixed(2)}</td>
+      <td class="num">${r.groups.toFixed(1)}</td>
+      <td class="num">${r.largestGroup.toFixed(1)}</td>
+      <td class="num">${r.avgNearestDistance.toFixed(2)}</td>
+      <td class="num">${r.collisionsPerStep.toFixed(2)}</td>
+      <td><button class="btn" data-exp="${i}">Смотреть</button></td></tr>`);
+  });
+}
+
+function downloadCsv() {
+  const head = 'Серия;Эксперимент;Поляризация;Групп;В крупнейшей;До ближайшего соседа;Столкновений за шаг';
+  const rows = expResults.map(r => [r.series, r.name, r.polarization, r.groups, r.largestGroup,
+    r.avgNearestDistance, r.collisionsPerStep].map(v => typeof v === 'number' ? v.toFixed(3).replace('.', ',') : v).join(';'));
+  const blob = new Blob(['﻿' + [head, ...rows].join('\n')], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'boids-experiments.csv'; a.click();
+}
+
+// ---------------------------------------------------------------- события
+document.querySelectorAll('nav button').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
+function showTab(name) {
+  document.querySelectorAll('nav button').forEach(x => x.classList.toggle('active', x.dataset.tab === name));
+  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x.id === 'tab-' + name));
+}
+
+$('play').onclick = () => { running = !running; updatePlay(); };
+$('stepBtn').onclick = async () => onState(await api('POST', '/api/step?count=1'));
+$('reset').onclick = () => { readEnvControls(); reset(params); };
+$('defaults').onclick = async () => reset(await api('GET', '/api/defaults'));
+$('boundaryMode').onchange = () => sendLiveParams();
+$('snap').onclick = () => {
+  const a = document.createElement('a');
+  a.href = world.toDataURL('image/png'); a.download = `boids-step-${state ? state.step : 0}.png`; a.click();
+};
+$('runExp').onclick = runExperiments;
+$('csv').onclick = downloadCsv;
+document.querySelector('#expTable tbody').addEventListener('click', async e => {
+  const i = e.target.dataset.exp;
+  if (i === undefined) return;
+  await reset(expResults[i].params);
+  showTab('sim');
+  running = true; updatePlay();
+});
+
+(async function init() {
+  buildLiveControls();
+  params = await api('GET', '/api/defaults');
+  await reset(params);
+  loop();
+})();
+</script>
+</body>
+</html>
